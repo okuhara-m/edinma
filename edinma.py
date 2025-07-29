@@ -22,13 +22,14 @@ from html.parser import HTMLParser
 # 21:EDINETのデータファイルダウンロード
 # 22:ダウンロードファイルの存在確認
 # 23:FYからCYへのデータ変換：fy2cy()
-# 31(42):データファイルからの事業等のリスクの抽出 :extractrisk()
-# 32(43):ZIPファイルからXBRLファイルの抽出 :zip2xbrl()
+# 31:データファイルからの事業等のリスクの抽出 :extractrisk()
+# 32:ZIPファイルからXBRLファイルの抽出 :zip2xbrl()
 # 35:データファイルの中のキーワードカウント（ファイル出力付き,複数セクション対応）:readtext()
 # 44:リスク情報テキストの１年分結合
 # 45:リスク情報テキストのファイル名変更（証券コードから企業名へ）
 # 46:リスク情報テキストの１年分結合（NAMED版）
 # 51:XBRLファイルからパラメータの抽出 :readxbrl()
+# 52:XBRLファイルからセクションの抽出 :extractxbrl()
 # 57:パラメータファイルの作成（基本情報のみ，INDEX不使用） :makeparamfile4()
 
 #OBSOLATES
@@ -48,6 +49,20 @@ flabels = [
     ["EMP" , "Number of employees", "jpcrp_cor:NumberOfEmployees", "Instant"] #従業員数
 ]
 
+#項目見出しラベル　略号，日本語名，英語名，qname, 集計種別
+tlabels = [
+    ["10","経営方針、経営環境及び対処すべき課題等","Management policy, business environment, issues to address",
+    ":BusinessPolicyBusinessEnvironmentIssuesToAddressEtcTextBlock","instant"],
+    ["10-2","サステナビリティに関する考え方及び取組","Disclosure of Sustainability-related Financial Information",
+     ":DisclosureOfSustainabilityRelatedFinancialInformationTextBlock","instant"],
+    ["11","事業等のリスク","Business risks",
+    ":BusinessRisksTextBlock","instant"],
+    ["12","経営者による財政状態、経営成績及びキャッシュ・フローの状況の分析","Management analysis of financial position, operating results and cash flows",
+    ":ManagementAnalysisOfFinancialPositionOperatingResultsAndCashFlowsTextBlock","instant"],
+    ["35","コーポレート・ガバナンスの概要","Overview of corporate governance",
+    ":OverviewOfCorporateGovernanceTextBlock","instant"],
+]
+
 plabels = [
     ["ROA1", "ROA of year 1"],
     ["ROA2", "ROA of year 2"],
@@ -59,17 +74,15 @@ plabels = [
     ["SC", "Security terms"]
 ]
 
-RUNCOMMENT = "MODE 31（2020）EDI改版"
+RUNCOMMENT = "MODE 44（2024）テキスト結合"
 
-RUNMODE = 31
-TRIAL = "C92"
+RUNMODE = 44
+TRIAL = "C93"
 MODULE = "ED1"
-VERSION = "71"
+VERSION = "73"
 
-D_START = "2020-01-01"
-D_END = "2020-12-31" 
-#D_START = "2023-10-01"
-#D_END = "2023-12-31" 
+D_START = "2024-01-01"
+D_END = "2024-12-31" 
 
 IPOONLY = True
 CONTENT = False
@@ -86,7 +99,8 @@ edinetlabels = {
 }
 
 #RTYPES = [ "10013", "10014", "10017", "10264", "10372" ]
-RTYPES = [ "21", "22", "23", "24", "31" ]
+#RTYPES = [ "21", "22", "23", "24", "31" ]
+RTYPES = [ "10", "10-2", "11", "12", "35" ]
 YEAR_RANGE = range(2020,2025) #rangeの仕様で最後の年は入らないことに注意
 
 #for mode 52
@@ -122,7 +136,7 @@ APIKEY = "** Put Your EDINET API Key Here **"
 LOG_FILE =TRIAL + "_log.txt"
 
 #WORDS = ["リスク","環境","社会的責任","感染","統制","コロナウイルス","コンプライアンス","コーポレート・ガバナンス","法律","インターネット","持続","セキュリティ","マネジメント","エネルギー","ネットワーク","デジタル","統治","持続可能","サイバー","プライバシー"]
-WORDS = ["情報セキュリティ", "セキュリティ", "セキュリティ対策", "サイバーセキュリティ", "情報セキュリティマネジメントシステム", "セキュリティー", "情報セキュリティポリシー", "セキュリティインシデント", "ネットワーク・セキュリティ", "セキュリティポリシー" ]
+WORDS = ["情報セキュリティ", "セキュリティ", "セキュリティ対策", "サイバーセキュリティ", "情報セキュリティマネジメントシステム", "セキュリティー", "情報セキュリティポリシー", "セキュリティインシデント", "ネットワーク・セキュリティ", "セキュリティポリシー", "個人情報" ]
 #WORDS = ["セキュリティ"]
 
 #INDEXファイル指定期間の省略時処理
@@ -450,6 +464,7 @@ def zip2xbrl(fp_log, fp_list, id, ccode):
 
     return 0
 
+
 #----------------------------------------------------------------
 
 def readxbrl(fp_log, ccode, cf):
@@ -504,6 +519,57 @@ def readxbrl(fp_log, ccode, cf):
                     fp_out.write(flabels[i][0] + "," + str(col1) + "," + str(col2) + "," + str(value) + "," + id + "\n") 
         
         print(".", end = "")
+
+    return 0
+
+#----------------------------------------------------------------
+
+def extractxbrl(fp_log, fp_list, id, ccode, cf):
+
+    p1 = re.compile(r"<[^>]*?>") #タグ削除
+    p2 = re.compile('&#.*;') #代替文字削除
+    
+    ctrl = Cntlr.Cntlr(logFileName=None)
+    model_xbrl = ctrl.modelManager.load(cf)
+
+    ctrl = Cntlr.Cntlr(logFileName='logToPrint')
+    model_xbrl = ctrl.modelManager.load(cf)
+
+#    fp_list.write(id + "," + ccode + "," + "," + cf + "\n")
+
+    for fact in model_xbrl.facts:
+
+        # 必要情報の取得
+        label_ja = fact.concept.label(preferredLabel=None, lang='ja', linkroleHint=None)
+        label_en = fact.concept.label(preferredLabel=None, lang='en', linkroleHint=None)
+        id = fact.contextID
+        qname = str(fact.qname)
+
+        try:
+           # 数値
+           value = fact.vEqValue
+        except ValueError as e:
+            pass
+
+        fp_list.write("[" + qname + "]")
+        
+        for i in range(len(tlabels)):
+
+            if qname.endswith(tlabels[i][3]):
+
+                tagid = tlabels[i][0]
+
+                fp_list.write(id + "," + ccode + "," + tagid + "," + cf + "\n")
+
+                fp_out = open(TEXTDIR + tagid + "/" + ccode + "_" + FYEAR + ".txt","w", encoding="utf-8")
+   
+#                                    lw = b_text.encode("cp932", "ignore").decode("cp932") #変換できないコード除け（ex. 0xae)
+
+                value = p1.sub('', value) #タグ削除
+                value = p2.sub('', value) #代替文字削除
+
+                fp_out.write(value)
+                fp_out.close()
 
     return 0
 
@@ -794,15 +860,11 @@ def headercheck(fp_log, id, pdate, ccode, eid):
 
 #----------------------------------------------------------------
 
-def mergerisktext(fp_log, fp_out, ccode):
+def mergesectiontext(fp_log, fp_out, infile):
 
-    infile = TEXTDIR + ccode + "_" + FYEAR + ".txt"
     with open(infile,"r", encoding="utf_8_sig") as fp_in:
 
         for line in fp_in:
-
-#            outbuf = line.encode("cp932", "ignore").decode("cp932") #変換できないコード除け（ex. 0xae)
-
             fp_out.write(line)
 
     return 0
@@ -1108,22 +1170,38 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
                 logwrite(fp_log, " FILES=" + str(called))
 
     elif RUNMODE == 44:
-        
-        with open(HOMEDIR + "L_RISKTEXT_" + FYEAR + ".csv", "r") as fp_idx: 
-            
-            with open(YEARDIR + "RISKTEXT.txt", "w", encoding="utf-8") as fp_out: 
 
-                csvr = csv.reader(fp_idx)
+        called = 0
+        warnings = 0
+
+        for tn in edinetlabels.values():
+
+            print("\nProcessing:YEAR=" + FYEAR + " :TYPE=" + tn)
+            target = TEXTDIR + str(tn)
+            files = os.listdir(target)
+
+            processed = 0
+            with open(YEARDIR + "MERGEDTEXT_" + tn + ".txt", "w", encoding="utf-8") as fp_out: 
+
+                for fn in files:
     
-                for rec in csvr:
-                    if len(rec) < 1:
-                        break
-    
-                    id = rec[1]
-                    ccode = rec[2]
-    
-                    rv = mergerisktext(fp_log, fp_out, ccode)
-                    called += 1
+                    if fn.endswith('txt'):
+
+                        infile = target + "/" + fn
+                        rv = mergesectiontext(fp_log, fp_out, infile)
+                        called += 1
+                        processed += 1
+        
+                        if rv > 0:
+                            warnings += 1
+
+                        if processed % 100 == 0:
+                            print("[" + str(processed) + "]", end = "")
+
+            
+        print(str(called) + " processed.")
+        print(str(warnings) + " warnings.")
+        fp_log.write("WARNINGS:" + str(warnings) + "\n")
                 
     elif RUNMODE == 45:
 
@@ -1212,8 +1290,7 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
     
     elif RUNMODE == 51:
 
-        print("Caution: This proccess takes several hours.")
-        print("         Network connectivity required to decode xbrl.")
+        print("Caution: This proccess takes several hours. Network connectivity required to decode xbrl.")
         with open(HOMEDIR + "L_XBRLZIP_" + FYEAR + ".csv", "r") as fp_idx: 
             
             csvr = csv.reader(fp_idx)
@@ -1221,7 +1298,7 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
             for rec in csvr:
                 if len(rec) < 1:
                     break
-
+    
                 id = rec[0]
                 ccode = rec[1]
                 cf = rec[2]
@@ -1229,6 +1306,49 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
                 rv = readxbrl(fp_log, ccode, cf)
                 called += 1
                 
+    elif RUNMODE == 52:
+
+        called = 0
+        
+        outfile = "L_RISKTEXT_"
+
+        # サブディレクトリの準備
+        for tn in edinetlabels.values():
+            target = TEXTDIR + str(tn)
+            if not os.path.isdir(target):
+                os.makedirs(target)
+        
+        print("Caution: This proccess takes several hours. Network connectivity required to decode xbrl.")
+        with open(HOMEDIR + "L_XBRLZIP_" + FYEAR + ".csv", "r") as fp_idx: 
+#        with open(HOMEDIR + IDX_FILE, "r") as fp_idx: #入力インデックスファイル
+            
+            with open(HOMEDIR + outfile + FYEAR + ".csv", "w") as fp_list: #出力インデックスファイル
+
+                csvr = csv.reader(fp_idx)
+    
+                for rec in csvr:
+                    if len(rec) < 1:
+                        break
+        
+                    id = rec[0]
+                    ccode = rec[1]
+                    cf = rec[2]
+
+                    if IPOONLY and rec[1] == "None":
+                        print(id + ": No Sec Code.")
+                        print(".", end = "")
+                        pass
+                    else:
+                        print("*", end = "")
+                        rv = extractxbrl(fp_log, fp_list, id, ccode, cf)
+
+                    called += 1
+#                    if called % 100 == 0:
+#                        print("[" + str(called) + "]", end = "")
+                        
+        print("Next step:51")
+    
+    
     elif RUNMODE == 57:
 
         dyear = int(FYEAR)
