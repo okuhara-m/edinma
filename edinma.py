@@ -4,7 +4,7 @@ import datetime
 import time
 import json
 from datetime import datetime, date, timedelta
-from Arelle.arelle import Cntlr
+# from Arelle.arelle import Cntlr
 import zipfile
 import csv
 import os
@@ -12,8 +12,11 @@ import shutil
 import re
 import glob
 from html.parser import HTMLParser
+import random
+from bs4 import BeautifulSoup
+
 #from selenium import webdriver
-# from selenium.webdriver.chrome.options import Options
+#from selenium.webdriver.chrome.options import Options
 #import chromedriver_binary
 #from bs4 import BeautifulSoup
 
@@ -25,6 +28,9 @@ from html.parser import HTMLParser
 # 31:データファイルからの事業等のリスクの抽出 :extractrisk()
 # 32:ZIPファイルからXBRLファイルの抽出 :zip2xbrl()
 # 35:データファイルの中のキーワードカウント（ファイル出力付き,複数セクション対応）:readtext()
+# 36/37:データファイルの中のキーワード文脈抽出:scraptext()
+# 38:データファイルの中からの段落抽出: scraptext2()
+# 39:データファイルの中からの段落抽出: scraptext3() *RTYPESに00を指定すること
 # 44:リスク情報テキストの１年分結合
 # 45:リスク情報テキストのファイル名変更（証券コードから企業名へ）
 # 46:リスク情報テキストの１年分結合（NAMED版）
@@ -32,12 +38,6 @@ from html.parser import HTMLParser
 # 52:XBRLファイルからセクションの抽出 :extractxbrl()
 # 57:パラメータファイルの作成（基本情報のみ，INDEX不使用） :makeparamfile4()
 
-#OBSOLATES
-# 31(3):データファイルの中のキーワードカウント:readzip()
-# 32(5):データファイルの中のキーワードカウント（ファイル出力付き）:countzip()
-# 33:データファイルの中のキーワードカウント（ファイル出力付き）(NAMED版）:readtext()
-# 34:データファイルの中のキーワードカウント（ファイル出力付き）(TEXT版）:readtext()
-# 41(4):データファイルのテキスト化
 
 #XBRLラベル　略号，英語名，qname, 集計種別
 flabels = [
@@ -49,18 +49,18 @@ flabels = [
     ["EMP" , "Number of employees", "jpcrp_cor:NumberOfEmployees", "Instant"] #従業員数
 ]
 
-#項目見出しラベル　略号，日本語名，英語名，qname, 集計種別
+#項目見出しラベル　略号，日本語名，英語名，qname, 集計種別,見出し記号
 tlabels = [
     ["10","経営方針、経営環境及び対処すべき課題等","Management policy, business environment, issues to address",
-    ":BusinessPolicyBusinessEnvironmentIssuesToAddressEtcTextBlock","instant"],
+    "jpcrp_cor:BusinessPolicyBusinessEnvironmentIssuesToAddressEtcTextBlock","instant","A"],
     ["10-2","サステナビリティに関する考え方及び取組","Disclosure of Sustainability-related Financial Information",
-     ":DisclosureOfSustainabilityRelatedFinancialInformationTextBlock","instant"],
+     "jpcrp_cor:DisclosureOfSustainabilityRelatedFinancialInformationTextBlock","instant","B"],
     ["11","事業等のリスク","Business risks",
-    ":BusinessRisksTextBlock","instant"],
+    "jpcrp_cor:BusinessRisksTextBlock","instant","C"],
     ["12","経営者による財政状態、経営成績及びキャッシュ・フローの状況の分析","Management analysis of financial position, operating results and cash flows",
-    ":ManagementAnalysisOfFinancialPositionOperatingResultsAndCashFlowsTextBlock","instant"],
+    "jpcrp_cor:ManagementAnalysisOfFinancialPositionOperatingResultsAndCashFlowsTextBlock","instant","D"],
     ["35","コーポレート・ガバナンスの概要","Overview of corporate governance",
-    ":OverviewOfCorporateGovernanceTextBlock","instant"],
+    "jpcrp_cor:OverviewOfCorporateGovernanceTextBlock","instant","E"]
 ]
 
 plabels = [
@@ -74,15 +74,24 @@ plabels = [
     ["SC", "Security terms"]
 ]
 
-RUNCOMMENT = "MODE 44（2024）テキスト結合"
+RUNCOMMENT = "mode 33 FFE"
 
-RUNMODE = 44
-TRIAL = "C93"
+RUNMODE = 33
+TRIAL = "C115"
 MODULE = "ED1"
-VERSION = "73"
+VERSION = "90"
 
-D_START = "2024-01-01"
-D_END = "2024-12-31" 
+REPORT_TYPE = "120" # 120:有価証券報告書，130:訂正有価証券報告書
+
+RTYPES = [ "A", "B", "C", "D", "E" ]
+#RTYPES = [ "10", "10-2", "11", "12", "35" ]
+#RTYPES = [ "11"]
+
+D_START = "2021-01-01"
+D_END = "2021-12-31" 
+
+#YEAR_RANGE = range(2020,2025) #rangeの仕様で最後の年は入らないことに注意
+YEAR_RANGE = range(2025,2026)
 
 IPOONLY = True
 CONTENT = False
@@ -90,22 +99,46 @@ DEFLATE = False
 
 deflator = {2017:1.005, 2018:1.004, 2019:1.012, 2020:1.019, 2021:1.018, 2022:1.027, 2023:1.0, 2024:1.0}
 
+#edinetlabels = {
+#    "【経営方針、経営環境及び対処すべき課題":"10", #21
+#    "【サステナビリティに関する考え方及び取":"10-2", #22
+#    "【事業等のリスク":"11", #23
+#    "【経営者による財政状態、経営成績及びキャッシュ・フローの状況の分析":"12", #24
+#    "【コーポレート・ガバナンスの概要":"35" #31
+#}
+
 edinetlabels = {
-    "【経営方針、経営環境及び対処すべき課題":"10", #21
-    "【サステナビリティに関する考え方及び取":"10-2", #22
-    "【事業等のリスク":"11", #23
-    "【経営者による財政状態、経営成績及びキャッシュ・フローの状況の分析":"12", #24
-    "【コーポレート・ガバナンスの概要":"35" #31
+    "【経営方針、経営環境及び対処すべき課題":"A", #21
+    "【サステナビリティに関する考え方及び取":"B", #22
+    "【事業等のリスク":"C", #23
+    "【経営者による財政状態、経営成績及びキャッシュフローの状況の分析":"D", #24
+    "【コーポレートガバナンスの概要":"E" #31
 }
 
-#RTYPES = [ "10013", "10014", "10017", "10264", "10372" ]
-#RTYPES = [ "21", "22", "23", "24", "31" ]
-RTYPES = [ "10", "10-2", "11", "12", "35" ]
-YEAR_RANGE = range(2020,2025) #rangeの仕様で最後の年は入らないことに注意
+Rprefix = {
+    "00":"R",
+    "10":"A",
+    "10-2":"B",
+    "11":"C",
+    "12":"D",
+    "35":"E"
+}
+
+Cprefix = {
+    "00":"S",
+    "10":"M",
+    "10-2":"N",
+    "11":"O",
+    "12":"P",
+    "35":"Q"
+}
 
 #for mode 52
 FIGCAT = "EMP"
 FIGTYPE = "1"
+
+#for mode 11/21/22
+API_WAIT = 5
 
 #for mode 53 / 54
 OFFSET = 3
@@ -120,24 +153,29 @@ iyear = int(D_START[0:4])
 
 FYEAR = str(iyear)
 HOMEDIR = "C:/Users/Master/Documents/IISEC/pyhome/edinet/"
+#HOMEDIR = "C:/Users/Master/Documents/IISEC/pyhome/csr/"
 HOMEDATA = HOMEDIR + "data/"
+#DATADIR = HOMEDIR + FYEAR + "/data" + REPORT_TYPE + "/"
 DATADIR = HOMEDIR + FYEAR + "/data/"
 TEXTDIR = HOMEDIR + FYEAR + "/text/"
 NAMEDDIR = HOMEDIR + FYEAR + "/named/"
 XBRLDIR = HOMEDIR + FYEAR + "/xbrl/"
 YEARDIR = HOMEDIR + FYEAR + "/"
 
+LOGDIR = "C:/Users/Master/Documents/IISEC/pyhome/log/"
+CONFIG_FILE = LOGDIR + "config.json"
+
 #EDINETアクセスデータ
 #2024-04-01変更
 #url0 =  "https://disclosure.edinet-fsa.go.jp/api/v1/documents"
 url0 =  "https://api.edinet-fsa.go.jp/api/v2/documents"
-APIKEY = "** Put Your EDINET API Key Here **"
+EDINET_KEY_FILE = "EDINET_KEY.txt"
 
 LOG_FILE =TRIAL + "_log.txt"
 
 #WORDS = ["リスク","環境","社会的責任","感染","統制","コロナウイルス","コンプライアンス","コーポレート・ガバナンス","法律","インターネット","持続","セキュリティ","マネジメント","エネルギー","ネットワーク","デジタル","統治","持続可能","サイバー","プライバシー"]
-WORDS = ["情報セキュリティ", "セキュリティ", "セキュリティ対策", "サイバーセキュリティ", "情報セキュリティマネジメントシステム", "セキュリティー", "情報セキュリティポリシー", "セキュリティインシデント", "ネットワーク・セキュリティ", "セキュリティポリシー", "個人情報" ]
-#WORDS = ["セキュリティ"]
+#WORDS = ["情報セキュリティ", "セキュリティ", "セキュリティ対策", "サイバーセキュリティ", "情報セキュリティマネジメントシステム", "セキュリティー", "情報セキュリティポリシー", "セキュリティインシデント", "ネットワーク・セキュリティ", "セキュリティポリシー", "個人情報" ]
+WORDS = ["セキュリティ"]
 
 #INDEXファイル指定期間の省略時処理
 
@@ -157,8 +195,10 @@ if len(D_END) == 0:
 D_RANGE = D_START[0:4] + D_START[5:7] + D_START[8:10] + "_" + D_END[0:4] + D_END[5:7] + D_END[8:10]
 #D_RANGE = "20230421_20230430"
 
-IDX_FILE = MODULE + "_" + D_RANGE + ".csv"
-
+if REPORT_TYPE == "":
+    IDX_FILE = MODULE + "_" + D_RANGE + ".csv"
+else:
+    IDX_FILE = MODULE + "_" + REPORT_TYPE + "_" + D_RANGE + ".csv"
 
 #----------------------------------------------------------------
 
@@ -180,6 +220,8 @@ class Parser(HTMLParser):
         if tag[0] == "h":
             self.title = True
             self.titletext = ""
+        elif tag[0] == "p" and self.target == True:
+            self.text[self.titleid] += "\n"           
 
     def handle_endtag(self, tag):
 
@@ -216,6 +258,8 @@ class Parser(HTMLParser):
 
                 self.titlelabel = self.titletext[needle1:needle2+1] #【】の部分のみ抽出
                 self.titlelabel = self.titlelabel.replace("，","、") # 全角カンマの正規化
+                self.titlelabel = self.titlelabel.replace("および","及び") # 「及び」の正規化
+                self.titlelabel = self.titlelabel.replace("・","") # 「・」の正規化
                 
                 for l in edinetlabels.keys():
                     
@@ -230,6 +274,9 @@ class Parser(HTMLParser):
                         else:
                             if tag[1] != "3":
                                 self.warnings += (" HEADER LEVEL != 3:" + tag + ":" + self.titlelabel + "\n")
+            
+        elif tag[0] == "p" and self.target == True:
+                self.text[self.titleid] += "\n"           
 
 
     def handle_data(self, data):
@@ -238,6 +285,7 @@ class Parser(HTMLParser):
             self.titletext += data
 
         elif self.target == True:
+            data = data.replace("\n", "") #万一ソース内に改行があった場合の処理
             self.text[self.titleid] += data
 
 
@@ -287,44 +335,16 @@ class HChecker(HTMLParser):
 
 #----------------------------------------------------------------
 
-class HChecker2(HTMLParser):
+def prepare_directory(target):
 
-    def __init__(self):
-        HTMLParser.__init__(self)
-        self.title = False
-        self.text = [] #戻り値
-        self.titletext = ["","","","",""] #テキストpathの格納エリア
-        self.textintag = ""
+    if not os.path.isdir(target):
+        os.makedirs(target)
+        print("DATA directory created:" + target)
+    else:
+        print("DATA directory already exists:" + target)
 
-    def handle_starttag(self, tag, attrs):
-        if tag in ("h1", "h2", "h3", "h4"):
-            self.title = True
-            self.level = int(tag[1])
-            self.textintag = ""
-
-    def handle_endtag(self, tag):
-        if tag in ("h1", "h2", "h3", "h4"):
-            self.title = False
-
-            for i in range(self.level, 5): #自分より下のレベルのヘッダをリセット
-                self.titletext[i] = ""
-
-            self.titletext[self.level] = self.textintag #自分のレベルを記録
-
-            titlepath = ""
-            for i in range(self.level): #ヘッダパスを再構築
-                titlepath += ("/" + self.titletext[i+1])
-
-                
-                           
-
-            self.text.append(titlepath)
-
-    def handle_data(self, data):
-
-        if self.title == True:
-            self.textintag += data
-
+    return 0
+    
 #----------------------------------------------------------------
 
 def out(fp, strin):
@@ -333,12 +353,12 @@ def out(fp, strin):
 
     return 0
 
-
 #----------------------------------------------------------------
 
-def logwrite(fp, strin, cont=False):
+def logwrite(fp, strin, cont=False, display=True):
 
-    print(strin)
+    if display:
+        print(strin)
 
     if cont:
         fp.write(strin + ":")
@@ -349,17 +369,23 @@ def logwrite(fp, strin, cont=False):
 
 #----------------------------------------------------------------
 
-def getindex(fp_log, fp_idx, dates):
+def gatelog(message, fp):
+    print(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ":" + message)
+    fp.write(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ":" + message + "\n")
+
+#----------------------------------------------------------------
+
+def getindex(fp_log, fp_idx, dates, edninet_key):
     
     global url0
  
-    for i in range(10):
+    for i in range(API_WAIT):
         print(".", end="")
         time.sleep(1)
 
     print(dates, end = ":")
     
-    parms = {'date': dates, 'type' : '2', 'Subscription-Key' : APIKEY}
+    parms = {'date': dates, 'type' : '2', 'Subscription-Key' : edinet_key}
     url = url0 + ".json"
     res = requests.get(url, params=parms)
     res.encoding = res.apparent_encoding
@@ -376,13 +402,18 @@ def getindex(fp_log, fp_idx, dates):
     for rs in jdata["results"]:
         dtcode = str(rs["docTypeCode"])
         ccode = str(rs["secCode"])
-        if dtcode == "120":
+        if dtcode == REPORT_TYPE:
             nor += 1
             out(fp_idx, dates + ",")
             out(fp_idx, str(rs["edinetCode"]) + ",")
             out(fp_idx, ccode[0:4] + ",")
             out(fp_idx, dtcode + ",")
-            out(fp_idx, str(rs["docID"]) + "\n")
+            out(fp_idx, str(rs["docID"]) + ",")
+
+            out(fp_idx, str(rs["periodStart"]) + ",")
+            out(fp_idx, str(rs["periodEnd"]) + ",")
+            out(fp_idx, str(rs["submitDateTime"]) + ",")
+            out(fp_idx, str(rs["filerName"]) + "\n")
         
     print(" / Extracted:" + str(nor))
 
@@ -392,15 +423,15 @@ def getindex(fp_log, fp_idx, dates):
 #----------------------------------------------------------------
 
 
-def getfile(fp_log, id):
+def getfile(fp_log, id, edninet_key):
 
     global url0
    
-    for i in range(10):
+    for i in range(API_WAIT):
         print(".", end="")
         time.sleep(1)
     
-    parms = {'type' : '1', 'Subscription-Key' : APIKEY}
+    parms = {'type' : '1', 'Subscription-Key' : edninet_key}
     url = url0 + "/" + str(id)
 #    print("[" + url + "]")
     print(" calling...", end="")
@@ -526,6 +557,7 @@ def readxbrl(fp_log, ccode, cf):
 
 def extractxbrl(fp_log, fp_list, id, ccode, cf):
 
+    p0 = re.compile(r"</[hH][1-9]>") #hタグ
     p1 = re.compile(r"<[^>]*?>") #タグ削除
     p2 = re.compile('&#.*;') #代替文字削除
     
@@ -565,6 +597,8 @@ def extractxbrl(fp_log, fp_list, id, ccode, cf):
    
 #                                    lw = b_text.encode("cp932", "ignore").decode("cp932") #変換できないコード除け（ex. 0xae)
 
+                value = value.replace("</p>","\n") #パラグラフ維持のための追加　2025-09-30
+                value = p0.sub('\n', value) #hタグ分離 2025-10-01
                 value = p1.sub('', value) #タグ削除
                 value = p2.sub('', value) #代替文字削除
 
@@ -626,13 +660,13 @@ def makeparamfile4(fp_log, fp_out, ccode, dyear):
             
             if ix not in val:
                 errmsg = "Warning: value missing:" + ix + " in " + ccode
-                print(errmsg)
+#                print(errmsg)
                 fp_log.write(errmsg + "\n")
                 return 1
                 
             elif val[ix] == 0:
                 errmsg = "Warning: parameter equal to 0 : " + ix + " in " + ccode
-                print(errmsg)
+#                print(errmsg)
                 fp_log.write(errmsg + "\n")
                 return 1
 
@@ -659,7 +693,7 @@ def makeparamfile4(fp_log, fp_out, ccode, dyear):
 
 #----------------------------------------------------------------
 
-def extractrisk(fp_log, fp_list, id, pdate, ccode, eid):
+def extractrisk(fp_log, fp_list, id, pdate, ccode, eid, tyo):
     
     ids = str(id)
     zfile = DATADIR + ids +".zip"
@@ -695,21 +729,18 @@ def extractrisk(fp_log, fp_list, id, pdate, ccode, eid):
                         # b'<?xml version="1.0" encoding="utf-8"?>\r\n'
                         needle1 = b_headline.find("encoding=")
                         if needle1 < 0:
-                            print() #改行
-                            logwrite(fp_log, "Header Error 1 in " + id + ":" + b_headline)
+                            logwrite(fp_log, "Header Error 1 in " + id + ":" + b_headline, display=False)
                             break
                         
                         needle2 = b_headline.find('"', needle1)
                         if needle2 < 0:
-                            print() #改行
-                            logwrite(fp_log, "Header Error 2 in " + id + ":" + b_headline)
-                            print(b_headline)
+                            logwrite(fp_log, "Header Error 2 in " + id + ":" + b_headline, display=False)
+#                            print(b_headline)
                             break
 
                         needle3 = b_headline.find('"', needle2 + 1)
                         if needle2 < 0:
-                            print() #改行
-                            logwrite(fp_log, "Header Error 3 in " + id + ":" + b_headline)
+                            logwrite(fp_log, "Header Error 3 in " + id + ":" + b_headline, display=False)
                             break
 
                         encoding = b_headline[needle2 + 1 : needle3]
@@ -719,8 +750,7 @@ def extractrisk(fp_log, fp_list, id, pdate, ccode, eid):
                             encoding = "utf-8"
                             
                         if encoding != "utf-8":
-                            print() #改行
-                            logwrite(fp_log, "WARTING: encode is not utf-8: " + encoding + " in " + id)
+                            logwrite(fp_log, "WARTING: encode is not utf-8: " + encoding + " in " + id, display=False)
 
                         while(True):
                             try:
@@ -742,27 +772,81 @@ def extractrisk(fp_log, fp_list, id, pdate, ccode, eid):
     parser.close()
 
     if len(parser.warnings) > 0:
-        print() #改行
-        logwrite(fp_log, "WARNING IN PARSER: ID=" + id + " CODE=" + ccode)
-        logwrite(fp_log, parser.warnings)
+        logwrite(fp_log, "WARNING IN PARSER: ID=" + id + " CODE=" + ccode, display = False)
+        logwrite(fp_log, parser.warnings, display = False)
 
     for l in edinetlabels.values():
 
         if l in parser.text:
 
-            fp_list.write(pdate + "," + id + "," + ccode + "," + l + "," + cf + "\n")
-            fp_out = open(TEXTDIR + l + "/" + ccode + "_" + FYEAR + ".txt","w", encoding="utf-8")
-#                                fp_out = open(TEXTDIR + sec + "/" + ccode + "_" + eid + "_" + FYEAR + ".txt","w", encoding="utf-8")
-#                                print(TEXTDIR + sec + "/" + ccode + "_" + FYEAR + ".txt")
-
-#                                    lw = b_text.encode("cp932", "ignore").decode("cp932") #変換できないコード除け（ex. 0xae)
             lw = parser.text[l]
-            lw = p1.sub('', lw) #タグ削除
-            lw = p2.sub('', lw) #代替文字削除
-#                                if not lw.isascii(): #英字だけの行は削除
+#            lw = p1.sub('', lw) #タグ削除
+#            lw = p2.sub('', lw) #代替文字削除
+
+            if tyo:
+                tyolabel = "TYO"
+            else:
+                tyolabel = "OTH"
+            
+            fp_list.write(pdate + "," + id + "," + ccode + "," + l + "," + cf + "," + tyolabel + "\n")
+            fp_out = open(TEXTDIR + tyolabel + "/" + l + "-" + FYEAR + "_" + ccode + ".txt","w", encoding="utf-8")
             fp_out.write(lw)
             fp_out.close()
+
+
+#----------------------------------------------------------------
+
+def extractrisk2(fp_log, fp_list, id, pdate, ccode, eid, tyo):
     
+    ids = str(id)
+    zfile = DATADIR + ids +".zip"
+    
+    if tyo:
+        tyolabel = "TYO"
+    else:
+        tyolabel = "OTH"
+            
+    with zipfile.ZipFile(zfile) as fp_zip:
+
+        f_text = ""
+
+        for cf in fp_zip.namelist():
+
+            if (cf.startswith("PublicDoc") or cf.startswith("XBRL/PublicDoc")) and not cf.endswith("/"):
+                
+                with fp_zip.open(cf) as fp_rep:
+
+                    if not cf.endswith((".htm", ".html")):
+                        break
+
+                    in_file = False
+                    in_section = False
+                    t_text = ""
+                    
+                    b_text = fp_rep.read()
+
+                    # xml (または lxml) パーサーを指定すると名前空間タグを正しく処理できます
+                    soup = BeautifulSoup(b_text, 'xml')
+                    
+                    for t in tlabels:
+
+                        l = t[5] #見出し記号
+                        
+                        # name属性が "jpcrp_cor:CompanyNameCoverPage" であるタグを抽出
+                        element = soup.find(attrs={"name":t[3]})
+
+                        if element:
+
+                            # ix タグ配下のすべての p タグを取得
+                            paragraphs = [p.get_text(strip=True) for p in element.find_all('p')]
+
+
+                            with open(TEXTDIR + tyolabel + "/" + l + "-" + FYEAR + "_" + ccode + ".txt","w", encoding="utf-8") as f:
+                                for rec in paragraphs:
+                                    rec = rec.replace("\n", "") #万一ソース内に改行があった場合の処理
+                                    f.write(rec+"\n")
+
+                            fp_list.write(pdate + "," + id + "," + ccode + "," + l + "," + tyolabel + "," + str(len(element.text)) + "," + cf + "\n")
 
 #----------------------------------------------------------------
 
@@ -919,6 +1003,166 @@ def readtext(fp_log, fp_out, fn, ccode, source):
 
 #----------------------------------------------------------------
 
+def scraptext(fp_log, fp_out, fn, ccode, rtype, source, header):
+    
+    wc = {}
+    tc = 0
+
+    filepath = source + str(fn)
+    outbuf = ""
+
+    with open(filepath,"r", encoding="utf_8_sig") as fp_rep:
+
+        for key in WORDS:
+            wc[key] = 0
+
+        
+        while(True):
+
+            try:
+                b_text = fp_rep.readline()
+            except UnicodeDecodeError:
+                logwrite(fp_log, "Decode Error in " + filepath)
+                break
+
+            if(not b_text):
+                break
+
+            b_text = b_text.replace(" ","")
+            b_text = b_text.replace("\n","")
+            b_text = b_text.replace("\t","")
+
+            c_text = b_text.split("。")
+
+            for sentence in c_text:
+            
+                for key in WORDS:
+    
+                    kcnt =  sentence.count(key)
+                    if kcnt > 0:
+                        if header == True:
+                            outbuf += ("\n[" + ccode + "][" + rtype + "][" + key + "]\n")
+                        outbuf += sentence
+                        outbuf += "\n"
+
+    fp_out.write(outbuf)
+
+    return 0
+
+#----------------------------------------------------------------
+def splitdoc(fp_log, fp_idx, fn, rtype, ccode, source, outfile1, outfile2, sec = True, non = False):
+# formar: scraptext2
+    
+    wc = {}
+    tc = 0
+    seq1 = 0
+    seq2 = 0
+    seq3 = 0
+
+    filepath = source + str(fn)
+
+    with open(filepath,"r", encoding="utf_8_sig") as fp_rep:
+
+        for key in WORDS:
+            wc[key] = 0
+
+        lastline = False #ループ離脱フラグ
+        flush = False #バッファフラッシュフラグ
+        paragraph = "" #バッファ
+
+        try:
+            f_text = fp_rep.read()
+        except UnicodeDecodeError:
+            logwrite(fp_log, "Decode Error in " + filepath)
+            return 0
+        
+        s_text = f_text.split("\n")
+
+        for b_text in s_text:
+
+            if b_text.endswith("。"):
+                for key in WORDS:
+                    kcnt =  b_text.count(key)
+
+                    if kcnt > 0:
+                        seq1 += 1
+                        fp_idx.write(ccode + "," + rtype + ",1," + str(seq1) + ","  + str(seq1) + "," + str(len(b_text)) + "\n")
+
+                        if sec:
+                            with open(outfile1 + "_" + str(seq1).zfill(4) + ".txt","w", encoding="utf-8") as fp_out:
+                                fp_out.write(b_text + "\n")
+                        
+                    else:
+                        seq2 += 1
+                        if non:
+                            if random.uniform(0,SAMPLERATE) < 1.0 :
+                                seq3 += 1
+                                fp_idx.write(ccode + "," + rtype + ",0," + str(seq2) + ","  + str(seq3) + "," + str(len(b_text)) + "\n")
+                                with open(outfile2 + "_" + str(seq2 + 1000).zfill(4) + ".txt","w", encoding="utf-8") as fp_out:
+                                    fp_out.write(b_text + "\n")
+
+                flush = False
+                paragraph = ""
+
+    return [seq1, seq2]
+
+#----------------------------------------------------------------
+
+def scraptext3(fp_log, fn, ccode, rtype, source, outfile):
+    
+    wc = {}
+    tc = 0
+    seq = 0
+
+    filepath = source + str(fn)
+
+    with open(filepath,"r", encoding="utf_8_sig") as fp_rep:
+
+        for key in WORDS:
+            wc[key] = 0
+
+        lastline = False #ループ離脱フラグ
+        flush = False #バッファフラッシュフラグ
+        paragraph = "" #バッファ
+        
+        while(not lastline):
+
+            try:
+                b_text = fp_rep.readline()
+            except UnicodeDecodeError:
+                logwrite(fp_log, "Decode Error in " + filepath)
+                break
+
+            if(not b_text): #ファイル終了
+                lastline = True
+                b_text = ""
+                if len(paragraph) > 0:
+                    flush = True
+        
+            b_text = b_text.replace(" ","")
+            b_text = b_text.replace("　","")
+            b_text = b_text.replace("\n","")
+            b_text = b_text.replace("\t","")
+
+            if len(b_text) > 0:
+                if len(b_text) < 3 and b_text.startswith("$") and len(paragraph) > 0: #バッファフラッシュ
+                    flush = True
+                else:
+                    paragraph += b_text
+
+            if flush:
+                if paragraph.endswith("。"):
+                    with open(outfile + "_" + str(seq).zfill(2) + ".txt","w", encoding="utf-8") as fp_out:
+                        fp_out.write(paragraph + "\n")
+                    seq += 1
+
+                flush = False
+                paragraph = ""
+
+    return seq
+
+#----------------------------------------------------------------
+
 def moveifexist(fp_log, p_from, p_to):
 
     if(os.path.isfile(p_from) == False):
@@ -950,13 +1194,13 @@ def fin2cal(fp_log, id, pyear, pmonth, ccode):
 #----------------------------------------------------------------
 # main
 
-print("Start:" + datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+with open(LOGDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log: 
 
-with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log: 
+    fp_log.write("\n================")
+    gatelog("Start", fp_log)
     
     called = 0
     
-    fp_log.write("================\n")
     fp_log.write("START:" + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + "\n")
     fp_log.write("MODE:" + str(RUNMODE) + " / ")
     fp_log.write("MODULE:" + MODULE + " / ")
@@ -967,23 +1211,54 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
     fp_log.write("D_END:" + D_END + "\n")
     fp_log.write("COMMENT:" + RUNCOMMENT + "\n")
 
-    # get edinet index file
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+    except FileNotFoundError:
+        print("Config file not found. It will be created:" + CONFIG_FILE)
+        config_data["session"] = 0
+    
+    session_id = config_data["session"] + 1
+    print("session = " + str(session_id))
+    config_data["session"] = session_id
+
+    fp_log.write("SESSION:" + str(session_id) + "\n")
+    
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, ensure_ascii=False, indent=4)
+
+    
     if RUNMODE == 11:
+
+        #------------------------------------------------------------
+        #11:EDINETのインデックスファイルのダウンロード（期間指定）
+        #inputs
+        # D_START : 開始日
+        # D_END : 終了日（省略時は一か月分）
+        # REPORT_TYPE : 120（有価証券報告書）,130（再提出有価証券報告書)
+        # EDINET_KEY_FILE : EDINET APIのKEY,外部ファイル
+        #outputs
+        # INDEX FILE : ED1_rrr_yyyymmdd_yyyymmdd.csv
+        #------------------------------------------------------------
 
         dstart = datetime.strptime(D_START, '%Y-%m-%d')
         dend = datetime.strptime(D_END, '%Y-%m-%d')
         dnow = dstart
-        
-        idxfile = HOMEDIR + MODULE  + "_" + datetime.strftime(dstart, '%Y%m%d') + "_" + datetime.strftime(dend, '%Y%m%d') + ".csv"
 
+        with open(HOMEDIR + EDINET_KEY_FILE, "r") as fp_edikey:
+            try:
+                edinet_key = fp_edikey.read()
+            except FileNotFoundError as err:
+                logwrite(fp_log, err)
+                logwrite("Edinet API key required: " + HOMEDIR + EDINET_KEY_FILE)
+                sys.exit()
 
-        with open(idxfile, "w") as fp_idx: 
+        with open(HOMEDIR + IDX_FILE, "w", encoding="utf-8") as fp_idx: 
 
             while dnow <= dend:
 
                 d_now = datetime.strftime(dnow, '%Y-%m-%d')
-#                print(d_now)
-                rv = getindex(fp_log, fp_idx, d_now)
+                rv = getindex(fp_log, fp_idx, d_now, edinet_key)
                 called += 1
                 fp_log.write("- " + d_now + ": extracted:" + str(rv) + "\n")
 
@@ -991,19 +1266,50 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
 
         print("Next step:21")
 
-    # get edinet zip file
     elif RUNMODE == 21 or RUNMODE == 22:
         
+        #------------------------------------------------------------
+        #21:EDINETのデータファイルダウンロード
+        #inputs
+        # D_START : 開始日
+        # D_END : 終了日（省略時は一か月分）
+        # REPORT_TYPE : 120（有価証券報告書）,130（再提出有価証券報告書)
+        # INDEX FILE : ED1_rrr_yyyymmdd_yyyymmdd.csv
+        # EDINET_KEY_FILE : EDINET APIのKEY,外部ファイル
+        #outputs
+        # DATA FILES : YYYY/dataRRR/S100XXXX.zip
+        #------------------------------------------------------------
+        #22:ダウンロードファイルの存在確認
+        #inputs
+        # D_START : 開始日
+        # D_END : 終了日（省略時は一か月分）
+        # REPORT_TYPE : 120（有価証券報告書）,130（再提出有価証券報告書)
+        # INDEX FILE : ED1_rrr_yyyymmdd_yyyymmdd.csv
+        # EDINET_KEY_FILE : EDINET APIのKEY,外部ファイル
+        # DATA FILES : YYYY/dataRRR/S100XXXX.zip
+        #outputs
+        # なし（画面表示のみ）
+        #------------------------------------------------------------
+
         count = 0
         received = 0
         tcount = 0
 
-        with open(HOMEDIR + IDX_FILE, "r") as fp_idx: 
+        prepare_directory(DATADIR)
+        
+        with open(EDINET_KEY_FILE, "r") as fp_edikey:
+            try:
+                edinet_key = fp_edikey.read()
+            except FileNotFoundError as err:
+                logwrite(fp_log, err)
+                logwrite("Edinet API key required: " + EDINET_KEY_FILE)
+                sys.exit()
+               
+        with open(HOMEDIR + IDX_FILE, "r", encoding="utf-8") as fp_idx: 
             for line in fp_idx:
                 tcount += 1
-
         
-        with open(HOMEDIR + IDX_FILE, "r") as fp_idx: 
+        with open(HOMEDIR + IDX_FILE, "r", encoding="utf-8") as fp_idx: 
             
             csvr = csv.reader(fp_idx)
 
@@ -1025,7 +1331,7 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
 
                 elif len(str(id)) > 0:
                     if RUNMODE == 21:
-                        rv = getfile(fp_log, id)
+                        rv = getfile(fp_log, id, edinet_key)
                         if rv < 0:
                             break
                     else:
@@ -1043,6 +1349,16 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
 
     
     elif RUNMODE == 23:
+
+        #------------------------------------------------------------
+        #23:FYからCYへのデータ変換：fy2cy() ***OBSOLATE***
+        #inputs
+        # D_START : 開始日
+        # D_END : 終了日（省略時は一か月分）
+        # INDEX FILE : ED1_rrr_yyyymmdd_yyyymmdd.csv
+        #outputs
+        # DATA FILES : dataRRR/S100XXXX.zip
+        #------------------------------------------------------------
 
         with open(HOMEDIR + IDX_FILE, "r") as fp_idx: 
 
@@ -1071,21 +1387,59 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
     
     elif RUNMODE == 31 or RUNMODE == 32:
 
+        #------------------------------------------------------------
+        #31:データファイルからの事業等のリスクの抽出 
+        #inputs
+        # D_START : 開始日
+        # D_END : 終了日（省略時は一か月分）
+        # REPORT_TYPE : 120（有価証券報告書）,130（再提出有価証券報告書)
+        # INDEX FILE : ED1_rrr_yyyymmdd_yyyymmdd.csv
+        # DATA FILES : YYYY/dataRRR/S100XXXX.zip
+        #outputs
+        # LIST FILE : L_RISKTEXT_YYYY.csv
+        # DATA FILES : YYYY/text/LL/YYYY_CCCC.txt
+        #------------------------------------------------------------
+        #32:ZIPファイルからXBRLファイルの抽出 ***OBSOLATE***
+        #inputs
+        # D_START : 開始日
+        # D_END : 終了日（省略時は一か月分）
+        # REPORT_TYPE : 120（有価証券報告書）,130（再提出有価証券報告書)
+        # INDEX FILE : ED1_rrr_yyyymmdd_yyyymmdd.csv
+        # DATA FILES : YYYY/dataRRR/S100XXXX.zip
+        #outputs
+        # LIST FILE : L_XBRLZIP_YYYY.csv
+        # DATA FILES : YYYY/xbrl/CCCC_YYYY.txt
+        #------------------------------------------------------------
+
+        dataj_file = "data_j_20260930.csv"
+        
         called = 0
         
         if RUNMODE == 31:
-            outfile = "L_RISKTEXT_"
+            outfile = "L_RISKTEXT_" + str(session_id) + "_"
         else:
-            outfile = "L_XBRLZIP_"
+            outfile = "L_XBRLZIP_" + str(session_id) + "_"
 
         # サブディレクトリの準備
         if RUNMODE == 31:
-            for tn in edinetlabels.values():
-                target = TEXTDIR + str(tn)
-                if not os.path.isdir(target):
-                    os.makedirs(target)
+#            for tn in edinetlabels.values():
+#                target = TEXTDIR + str(tn)
+#                prepare_directory(target)
+            prepare_directory(TEXTDIR + "TYO")
+            prepare_directory(TEXTDIR + "OTH")
+
+        #東証リストの読み込み
+        with open(HOMEDIR + "" + dataj_file, "r", encoding="utf-8") as fp_code: 
+
+            csvr = csv.reader(fp_code)
+            codelist = []
+            
+            for rec in csvr:
+                codelist.append(rec[0])
+
+            print("code list length = " + str(len(codelist)))
         
-        with open(HOMEDIR + IDX_FILE, "r") as fp_idx: 
+        with open(HOMEDIR + "INDEX_FILES/" + IDX_FILE, "r", encoding="utf-8") as fp_idx: 
             
             with open(HOMEDIR + outfile + FYEAR + ".csv", "w") as fp_list: 
 
@@ -1095,20 +1449,22 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
                     if len(rec) < 4:
                         break
     
-    
                     id = rec[4]
                     pdate = rec[0]
                     eid = rec[1]
                     ccode = rec[2]
+
+                    if ccode in codelist:
+                        tyo = True
+                    else:
+                        tyo = False
     
                     if IPOONLY and rec[2] == "None":
-#                        print(id + ": No Sec Code.")
-#                        print(".", end = "")
                         pass
                     else:
-#                        print("*", end = "")
                         if RUNMODE == 31:
-                            rv = extractrisk(fp_log, fp_list, id, pdate, ccode, eid)
+                            rv = extractrisk(fp_log, fp_list, id, pdate, ccode, eid, tyo)
+
                         else:
                             rv = zip2xbrl(fp_log, fp_list, id, ccode)
 
@@ -1117,12 +1473,90 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
                         print("[" + str(called) + "]", end = "")
                         
         if RUNMODE == 31:
-            print("Next step:35")
+            print("Next step:38")
         else:
             print("Next step:51")
-                       
+
+    elif RUNMODE == 33:
+
+        #------------------------------------------------------------
+        #31:データファイルからの事業等のリスクの抽出 
+        #inputs
+        # D_START : 開始日
+        # D_END : 終了日（省略時は一か月分）
+        # REPORT_TYPE : 120（有価証券報告書）,130（再提出有価証券報告書)
+        # INDEX FILE : ED1_rrr_yyyymmdd_yyyymmdd.csv
+        # DATA FILES : YYYY/dataRRR/S100XXXX.zip
+        #outputs
+        # LIST FILE : L_RISKTEXT_YYYY.csv
+        # DATA FILES : YYYY/text/LL/YYYY_CCCC.txt
+
+        dataj_file = "data_j_20260930.csv"
+        
+        called = 0
+        
+        outfile = "L_RISKTEXT_" + str(session_id) + "_"
+
+        # サブディレクトリの準備
+        prepare_directory(TEXTDIR + "TYO")
+        prepare_directory(TEXTDIR + "OTH")
+
+        #東証リストの読み込み
+        with open(HOMEDIR + "" + dataj_file, "r", encoding="utf-8") as fp_code: 
+
+            csvr = csv.reader(fp_code)
+            codelist = []
+            
+            for rec in csvr:
+                codelist.append(rec[0])
+
+            print("code list length = " + str(len(codelist)))
+        
+        with open(HOMEDIR + "INDEX_FILES/" + IDX_FILE, "r", encoding="utf-8") as fp_idx: 
+            
+            with open(HOMEDIR + outfile + FYEAR + ".csv", "w") as fp_list: 
+
+                csvr = csv.reader(fp_idx)
+    
+                for rec in csvr:
+                    if len(rec) < 4:
+                        break
+    
+                    id = rec[4]
+                    pdate = rec[0]
+                    eid = rec[1]
+                    ccode = rec[2]
+
+                    if ccode in codelist:
+                        tyo = True
+                    else:
+                        tyo = False
+    
+                    if IPOONLY and rec[2] == "None":
+                        pass
+                    else:
+                        rv = extractrisk2(fp_log, fp_list, id, pdate, ccode, eid, tyo)
+
+                    called += 1
+                    if called % 100 == 0:
+                        print("[" + str(called) + "]", end = "")
+                        
+        print("Next step:38")
+
+    # RUNMODE 34 is defined later
     elif RUNMODE ==35:
     
+        #------------------------------------------------------------
+        #35:データファイルの中のキーワードカウント（ファイル出力付き,複数セクション対応） 
+        #inputs
+        # YEAR_RANGE : 処理対象年度
+        # RTYPES : 処理対象セクション
+        # KEYWORDS : 検索対象キーワードリスト
+        # DATA FILES : YYYY/text/LL/CCCC_YYYY.txt
+        #outputs
+        # DATA FILE : data/ED1_Cxxx_YYYY_LL_out.txt
+        #------------------------------------------------------------
+        
         fp_log.write("KEYWORDS:")
         for key in WORDS:
             fp_log.write("[" + key + "]")
@@ -1169,7 +1603,226 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
 
                 logwrite(fp_log, " FILES=" + str(called))
 
+    elif RUNMODE ==36:
+    
+        #------------------------------------------------------------
+        # 36:データファイルの中のキーワード文脈抽出:scraptext() ***OBSOLATE***
+        #inputs
+        # YEAR_RANGE : 処理対象年度
+        # RTYPES : 処理対象セクション
+        # KEYWORDS : 検索対象キーワードリスト
+        # DATA FILES : YYYY/text/LL/CCCC_YYYY.txt
+        #outputs
+        # DATA FILE : data/ED1_Cxxx_YYYY_LL_out.txt
+        #------------------------------------------------------------
+
+        fp_log.write("KEYWORDS:")
+        for key in WORDS:
+            fp_log.write("[" + key + "]")
+        fp_log.write("\n")
+
+        for tyear in YEAR_RANGE:
+
+            fyear = str(tyear)
+
+            for rtype in RTYPES:
+            
+                called = 0
+                logwrite(fp_log, "YEAR=" + fyear + ": TYPE=" + rtype, cont=True)
+
+                source = HOMEDIR + fyear + "/text/" + rtype + "/"
+                print("Reading from: [" + source + "]", end=" ")
+
+                if not os.path.isdir(source):
+                    logwrite(fp_log, " SKIPPED" + str(called))
+                    continue
+
+                files = os.listdir(source)
+                if len(files) > 0:
+                    
+                    with open(HOMEDATA + MODULE + "_" + TRIAL + "_" + fyear + "_" + rtype + "_out.txt","w", encoding="utf-8") as fp_out:
+
+                        #データ
+                        for fn in files:
+                            ccode = fn[0:4]
+            
+                            rv = scraptext(fp_log, fp_out, fn, rtype, ccode, source, True)
+                            called += 1
+
+                            if called % 100 == 0:
+                                print("[%d]" % called, end = "")
+
+                logwrite(fp_log, " FILES=" + str(called))
+                print(" ")
+
+    elif RUNMODE ==37:
+
+        #------------------------------------------------------------
+        # 37:データファイルの中のキーワード文脈抽出:scraptext() ***OBSOLATE***
+        #inputs
+        # YEAR_RANGE : 処理対象年度
+        # RTYPES : 処理対象セクション
+        # KEYWORDS : 検索対象キーワードリスト
+        # DATA FILES : YYYY/text/LL/CCCC_YYYY.txt
+        #outputs
+        # DATA FILE : data/ED1_Cxxx_YYYY_LL_out.txt
+        #------------------------------------------------------------
+
+        fp_log.write("KEYWORDS:")
+        for key in WORDS:
+            fp_log.write("[" + key + "]")
+        fp_log.write("\n")
+
+        for tyear in YEAR_RANGE:
+
+            fyear = str(tyear)
+
+            for rtype in RTYPES:
+
+                target = HOMEDIR + "/" + fyear + "/text2/" + rtype
+                print(target)
+                if not os.path.isdir(target):
+                    os.makedirs(target)
+            
+                called = 0
+                logwrite(fp_log, "YEAR=" + fyear + ": TYPE=" + rtype, cont=True)
+
+                source = HOMEDIR + fyear + "/text/" + rtype + "/"
+                print("Reading from: [" + source + "]", end=" ")
+
+                if not os.path.isdir(source):
+                    logwrite(fp_log, " SKIPPED" + str(called))
+                    continue
+
+                files = os.listdir(source)
+                if len(files) > 0:
+
+                    for fn in files:
+                        ccode = fn[0:4]
+        
+                        with open(target + "/" + ccode + "_" + fyear + ".txt","w", encoding="utf-8") as fp_out:
+
+                            rv = scraptext(fp_log, fp_out, fn, rtype, ccode, source, False)
+                            called += 1
+    
+                            if called % 100 == 0:
+                                print("[%d]" % called, end = "")
+
+                logwrite(fp_log, " FILES=" + str(called))
+                print(" ")
+
+    elif RUNMODE == 38 or RUNMODE == 39 or RUNMODE == 34:
+
+        #------------------------------------------------------------
+        # 38:データファイルの中からの段落抽出 (splitdoc)
+        #   （LDA用データ作成）
+        # 39:テキストファイルからの段落抽出（scrap_text3)
+        #    (CSR報告書用 $$$区切り）
+        #inputs
+        # YEAR_RANGE : 処理対象年度
+        # RTYPES : 処理対象セクション（リスト）
+        # KEYWORDS : 検索対象キーワードリスト
+        # SAMPLERATE : NON抽出のレート
+        # SEC : キーワード抽出あり
+        # NON : キーワード以外のサンプリング抽出あり
+        # DATA FILES : YYYY/text/TYO/S-CCCC_YYYY.txt
+        #outputs
+        # INDEX FILE : YYYY/textCxxx/index.csv
+        # COUNT FILE : YYYY/textCxxx/count.csv
+        # DATA FILE : YYYY/textCxxx/SEC/S-CCCC_YYYY_NNNN.txt
+        #------------------------------------------------------------
+
+        #parameters
+        SAMPLERATE = 40
+        SEC = True
+        NON = True
+
+        fp_log.write("KEYWORDS:")
+        for key in WORDS:
+            fp_log.write("[" + key + "]")
+        fp_log.write("\n")
+
+        fp_log.write("extract sec   :" + str(SEC) + "\n")
+        fp_log.write("sampling non  :" + str(NON) + "\n")
+        fp_log.write("sampling rate :" + str(SAMPLERATE) + "\n")
+        
+        for tyear in YEAR_RANGE:
+
+            fyear = str(tyear)
+            
+            target1 = HOMEDIR + fyear + "/text" + TRIAL + "/SEC"
+            prepare_directory(target1)
+
+            target2 = HOMEDIR + fyear + "/text" + TRIAL + "/NON"
+            prepare_directory(target2)
+        
+            called = 0
+            split1 = 0
+            split2 = 0
+            logwrite(fp_log, "YEAR=" + fyear, cont=True)
+
+            source = HOMEDIR + fyear + "/text/TYO/"
+                
+            print("Reading from: [" + source + "]", end=" ")
+
+            if not os.path.isdir(source):
+                logwrite(fp_log, " SKIPPED " + str(called))
+                continue
+
+            files = os.listdir(source)
+            if len(files) > 0:
+
+                with open(HOMEDIR + "/" + fyear + "/text" + TRIAL + "/"  + "index_"+ str(session_id) + ".csv","w", encoding="utf-8") as fp_idx:
+                    with open(HOMEDIR + "/" + fyear + "/text" + TRIAL + "/"  + "count_"+ str(session_id) + ".csv","w", encoding="utf-8") as fp_cnt:
+    
+                        fp_idx.write("CCODE, RTYPE, SECNON, COUNT, EXTRACT, TEXTLENGTH\n")
+                        fp_cnt.write("CCODE, RTYPE, SEC, NON, TOTAL\n")
+    
+                        for fn in files:
+    
+                            # A-YYYY_CCCC.txt を想定
+                            # 012345678901
+                            
+                            rtype = fn[0:1]
+                            ccode = fn[7:11]
+    
+                            outfile1 = target1 + "/" + rtype + "-" + fyear + "_" + ccode
+                            outfile2 = target2 + "/" + rtype + "-" + fyear + "_" + ccode
+                            
+                            if RUNMODE == 39:
+                                rv = scraptext3(fp_log, fn, rtype, ccode, source, outfile1)
+                            elif RUNMODE == 34: #パラメータ処理でできるのでもう不要といえば不要
+                                rv1, rv2 = splitdoc(fp_log, fp_idx, fn, rtype, ccode, source, outfile1, outfile2, False, False)
+                            else: #RUNMODE 38
+                                rv1, rv2 = splitdoc(fp_log, fp_idx, fn, rtype, ccode, source, outfile1, outfile2, SEC, NON)
+                                
+                            called += 1
+                            #fp_idx.write(ccode + "," + str(rv1) + "," + str(rv2) + "\n")
+                            
+                            fp_cnt.write(ccode + "," + rtype + "," + str(rv1) + "," + str(rv2) + "," + str(rv1 + rv2) + "\n")
+                        
+                            split1 += rv1
+                            split2 += rv2
+    
+                            if called % 100 == 0:
+                                print(".", end = "")
+
+            logwrite(fp_log, " FILES=" + str(called) + ", PROCESSED(SEC,NON)=" + str(split1) + ", " + str(split2))
+            print(" ")
+
     elif RUNMODE == 44:
+
+        #------------------------------------------------------------
+        # 44:リスク情報テキストの１年分結合
+        #   （ワードクラウド用データ作成）
+        #inputs
+        # YEAR_RANGE : 処理対象年度
+        # RTYPES : 処理対象セクション
+        # KEYWORDS : 検索対象キーワードリスト
+        # DATA FILES : YYYY/text/LL/CCCC_YYYY.txt
+        #outputs
+        # DATA FILE : YYYY/MERGETEXT_LL.txt
+        #------------------------------------------------------------
 
         called = 0
         warnings = 0
@@ -1315,8 +1968,7 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
         # サブディレクトリの準備
         for tn in edinetlabels.values():
             target = TEXTDIR + str(tn)
-            if not os.path.isdir(target):
-                os.makedirs(target)
+            prepare_directory(target)
         
         print("Caution: This proccess takes several hours. Network connectivity required to decode xbrl.")
         with open(HOMEDIR + "L_XBRLZIP_" + FYEAR + ".csv", "r") as fp_idx: 
@@ -1346,7 +1998,7 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
 #                    if called % 100 == 0:
 #                        print("[" + str(called) + "]", end = "")
                         
-        print("Next step:51")
+        print("Next step:38")
     
     
     elif RUNMODE == 57:
@@ -1385,5 +2037,5 @@ with open(HOMEDIR + LOG_FILE, 'a', encoding="utf-8") as fp_log:
     fp_log.write("PROCESSED:" + str(called) + "\n")
     fp_log.write("END:" + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + "\n\n")
 
-print("Done:" + datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    print("Process Finished.")
 
